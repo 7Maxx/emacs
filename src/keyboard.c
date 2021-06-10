@@ -2249,7 +2249,11 @@ read_decoded_event_from_main_queue (struct timespec *end_time,
 		  int i;
 		  if (meta_key != 2)
 		    for (i = 0; i < n; i++)
-		      events[i] = make_number (XINT (events[i]) & ~0x80);
+		      {
+			int c = XINT (events[i]);
+			int modifier = (meta_key == 3 && c < 0x100 && (c & 0x80)) ? meta_modifier : 0;
+			events[i] = make_number ((c & ~0x80) | modifier);
+		      }
 		}
 	      else
 		{
@@ -2258,7 +2262,7 @@ read_decoded_event_from_main_queue (struct timespec *end_time,
 		  int i;
 		  for (i = 0; i < n; i++)
 		    src[i] = XINT (events[i]);
-		  if (meta_key != 2)
+		  if (meta_key < 2) /* input-meta-mode T or NIL */
 		    for (i = 0; i < n; i++)
 		      src[i] &= ~0x80;
 		  coding->destination = dest;
@@ -2276,7 +2280,15 @@ read_decoded_event_from_main_queue (struct timespec *end_time,
 		      eassert (coding->carryover_bytes == 0);
 		      n = 0;
 		      while (n < coding->produced_char)
-			events[n++] = make_number (STRING_CHAR_ADVANCE (p));
+			{
+			  int c = STRING_CHAR_ADVANCE (p);
+			  if (meta_key == 3)
+			    {
+			      int modifier = (c < 0x100 && (c & 0x80)) ? meta_modifier : 0;
+			      c = (c & ~0x80) | modifier;
+			    }
+			  events[n++] = make_number (c);
+			}
 		    }
 		}
 	    }
@@ -7126,7 +7138,7 @@ tty_read_avail_input (struct terminal *terminal,
       buf.modifiers = 0;
       if (tty->meta_key == 1 && (cbuf[i] & 0x80))
         buf.modifiers = meta_modifier;
-      if (tty->meta_key != 2)
+      if (tty->meta_key < 2)
         cbuf[i] &= ~0x80;
 
       buf.code = cbuf[i];
@@ -10644,6 +10656,10 @@ DEFUN ("set-input-meta-mode", Fset_input_meta_mode, Sset_input_meta_mode, 1, 2, 
 If META is t, Emacs will accept 8-bit input, and interpret the 8th
 bit as the Meta modifier.
 
+If META is 'encoded', Emacs will decode the input in accordance
+to current coding system, and then examine decoded input 8th bit
+and interpret it as the Meta modifier
+
 If META is nil, Emacs will ignore the top bit, on the assumption it is
 parity.
 
@@ -10671,19 +10687,21 @@ See also `current-input-mode'.  */)
     new_meta = 0;
   else if (EQ (meta, Qt))
     new_meta = 1;
-  else
+  else if (!EQ (meta, Qencoded))
     new_meta = 2;
+  else
+    new_meta = 3;
 
   if (tty->meta_key != new_meta)
     {
-#ifndef DOS_NT
+#if 0
       /* this causes startup screen to be restored and messes with the mouse */
       reset_sys_modes (tty);
 #endif
 
       tty->meta_key = new_meta;
 
-#ifndef DOS_NT
+#if 0
       init_sys_modes (tty);
 #endif
     }
@@ -10754,6 +10772,7 @@ The value is a list of the form (INTERRUPT FLOW META QUIT), where
   FLOW is non-nil if Emacs uses ^S/^Q flow control for output to the
     terminal; this does not apply if Emacs uses interrupt-driven input.
   META is t if accepting 8-bit input with 8th bit as Meta flag.
+    META 'encoded' means the same but 8th bit is checked after coding system
     META nil means ignoring the top bit, on the assumption it is parity.
     META is neither t nor nil if accepting 8-bit input and using
     all 8 bits as the character code.
@@ -10771,7 +10790,8 @@ The elements of this list correspond to the arguments of
       flow = FRAME_TTY (sf)->flow_control ? Qt : Qnil;
       meta = (FRAME_TTY (sf)->meta_key == 2
 	      ? make_number (0)
-	      : (CURTTY ()->meta_key == 1 ? Qt : Qnil));
+	      : (CURTTY ()->meta_key == 1 ? Qt :
+		 (CURTTY ()->meta_key == 3 ? Qencoded : Qnil)));
     }
   else
     {
@@ -11209,6 +11229,9 @@ syms_of_keyboard (void)
   DEFSYM (Qhelp_form_show, "help-form-show");
 
   DEFSYM (Qecho_keystrokes, "echo-keystrokes");
+
+  /* input-meta-mode constant */
+  DEFSYM (Qencoded, "encoded");
 
   Fset (Qinput_method_exit_on_first_char, Qnil);
   Fset (Qinput_method_use_echo_area, Qnil);
